@@ -35,6 +35,14 @@ ICMP6_FQDN_QUERY = 139  # FQDN query
 ICMP6_FQDN_REPLY = 140  # FQDN reply
 ICMP6_NI_QUERY = 139  # node information request
 ICMP6_NI_REPLY = 140  # node information reply
+ICMP6_RPL_CONTROL = 155  # RFC 6550
+
+# RPL Control Message Codes
+RPL_DIS = 0x00
+RPL_DIO = 0x01
+RPL_DAO = 0x02
+RPL_DAO_ACK = 0x03
+RPL_CC = 0x80
 
 ICMP6_MAXTYPE = 201
 
@@ -82,12 +90,138 @@ class ICMP6(dpkt.Packet):
     class Echo(dpkt.Packet):
         __hdr__ = (('id', 'H', 0), ('seq', 'H', 0))
 
+    class RPLDIS(dpkt.Packet):
+        __hdr__ = (
+            ('flags', 'B', 0),
+            ('rsvd', 'B', 0)
+        )
+
+    class RPLDIO(dpkt.Packet):
+        __hdr__ = (
+            ('instance_id', 'B', 0),
+            ('version', 'B', 0),
+            ('rank', 'H', 0),
+            ('_g_mop_prf', 'B', 0),
+            ('dtsn', 'B', 0),
+            ('flags', 'B', 0),
+            ('rsvd', 'B', 0),
+            ('dodagid', '16s', b'\x00' * 16)
+        )
+        __bit_fields__ = {
+            '_g_mop_prf': (
+                ('g', 1),
+                ('_rsvd', 1),
+                ('mop', 3),
+                ('prf', 3)
+            )
+        }
+
+    class RPLDAO(dpkt.Packet):
+        __hdr__ = (
+            ('instance_id', 'B', 0),
+            ('_k_d_flags', 'B', 0),
+            ('rsvd', 'B', 0),
+            ('dao_sequence', 'B', 0)
+        )
+        __bit_fields__ = {
+            '_k_d_flags': (
+                ('k', 1),
+                ('d', 1),
+                ('flags', 6)
+            )
+        }
+
+        def unpack(self, buf):
+            dpkt.Packet.unpack(self, buf)
+            if self.d:
+                self.dodagid = self.data[:16]
+                self.data = self.data[16:]
+            else:
+                self.dodagid = None
+
+        def __bytes__(self):
+            res = self.pack_hdr()
+            if self.d and self.dodagid:
+                res += self.dodagid
+            res += bytes(self.data)
+            return res
+
+    class RPLDAOACK(dpkt.Packet):
+        __hdr__ = (
+            ('instance_id', 'B', 0),
+            ('_d_flags', 'B', 0),
+            ('dao_sequence', 'B', 0),
+            ('status', 'B', 0)
+        )
+        __bit_fields__ = {
+            '_d_flags': (
+                ('d', 1),
+                ('flags', 7)
+            )
+        }
+
+        def unpack(self, buf):
+            dpkt.Packet.unpack(self, buf)
+            if self.d:
+                self.dodagid = self.data[:16]
+                self.data = self.data[16:]
+            else:
+                self.dodagid = None
+
+        def __bytes__(self):
+            res = self.pack_hdr()
+            if self.d and self.dodagid:
+                res += self.dodagid
+            res += bytes(self.data)
+            return res
+
     _typesw = {1: Unreach, 2: TooBig, 3: TimeExceed, 4: ParamProb, 128: Echo, 129: Echo}
+    _rplsw = {
+        RPL_DIS: RPLDIS, RPL_DIO: RPLDIO,
+        RPL_DAO: RPLDAO, RPL_DAO_ACK: RPLDAOACK
+    }
 
     def unpack(self, buf):
         dpkt.Packet.unpack(self, buf)
         try:
-            self.data = self._typesw[self.type](self.data)
+            if self.type == ICMP6_RPL_CONTROL:
+                self.data = self._rplsw[self.code](self.data)
+            else:
+                self.data = self._typesw[self.type](self.data)
             setattr(self, self.data.__class__.__name__.lower(), self.data)
         except (KeyError, dpkt.UnpackError):
             pass
+
+
+def test_icmp6_rpl():
+    from binascii import unhexlify
+    # RPL DIO Example
+    # ICMPv6 Type 155, Code 1 (DIO), Checksum 0xdead
+    # RPL Header: Instance 1, Ver 2, Rank 256 (0x0100), G=0, MOP=1, Prf=0 (0x08), DTSN 3, Flags 0, Rsvd 0
+    # DODAGID: fd00::1
+    buf = unhexlify(
+        '9b01dead' +  # ICMPv6
+        '0102010008030000fd000000000000000000000000000001'
+    )
+    icmp = ICMP6(buf)
+    assert icmp.type == ICMP6_RPL_CONTROL
+    assert icmp.code == RPL_DIO
+    dio = icmp.rpldio
+    assert dio.instance_id == 1
+    assert dio.version == 2
+    assert dio.rank == 0x0100
+    assert dio.mop == 1
+    assert dio.dodagid == unhexlify('fd000000000000000000000000000001')
+    assert bytes(icmp) == buf
+
+    # RPL DIS Example
+    buf2 = unhexlify('9b00beef0000')
+    icmp2 = ICMP6(buf2)
+    assert icmp2.code == RPL_DIS
+    assert icmp2.rpldis.flags == 0
+    assert bytes(icmp2) == buf2
+
+
+if __name__ == '__main__':
+    test_icmp6_rpl()
+    print('Tests passed.')

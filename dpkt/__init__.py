@@ -33,6 +33,7 @@ from . import http2
 from . import icmp
 from . import icmp6
 from . import ieee80211
+from . import ieee802154
 from . import igmp
 from . import ip
 from . import ip6
@@ -62,6 +63,7 @@ from . import rx
 from . import sccp
 from . import sctp
 from . import sip
+from . import sixlowpan
 from . import sll
 from . import sll2
 from . import smb
