@@ -31,12 +31,23 @@ class SixLoWPAN(dpkt.Packet):
         else:
             self.data = buf
 
+    def decompress(self, src_mac=None, dst_mac=None):
+        """Try to decompress into an IP6 packet.
+        Requires MAC addresses for IPHC decompression.
+        """
+        if isinstance(self.data, SixLoWPAN_IPHC):
+            return self.data.decompress(src_mac, dst_mac)
+        elif self.dispatch == DISPATCH_IPV6:
+            return self.ip6
+        return None
+
 class SixLoWPAN_IPHC(dpkt.Packet):
     """6LoWPAN IPHC Header (RFC 6282)."""
     __hdr__ = (
         ('iphc', 'H', 0),
     )
-    # Big-endian 16-bit word
+    __byte_order__ = '>'
+    # Map from MSB to LSB of the 16-bit word
     __bit_fields__ = {
         'iphc': (
             ('_dispatch', 3), # 011
@@ -51,6 +62,151 @@ class SixLoWPAN_IPHC(dpkt.Packet):
             ('dam', 2),
         )
     }
+
+    def unpack(self, buf):
+        dpkt.Packet.unpack(self, buf)
+        off = 2
+        # Traffic Class, Flow Label (TF)
+        # 00: TC, FL (4 bytes)
+        # 01: DSCP, ECN, Rsvd, FL (3 bytes)
+        # 10: ECN, Rsvd, TC, Rsvd (1 byte)
+        # 11: Omitted
+        if self.tf == 0:
+            off += 4
+        elif self.tf == 1:
+            off += 3
+        elif self.tf == 2:
+            off += 1
+            
+        # Next Header (NH)
+        if self.nh == 0:
+            off += 1
+            
+        # Hop Limit (HLIM)
+        if self.hlim == 0:
+            off += 1
+            
+        # Source Address (SAM)
+        if not self.sac: # Stateless
+            if self.sam == 0: off += 16
+            elif self.sam == 1: off += 8
+            elif self.sam == 2: off += 2
+        
+        # Destination Address (DAM)
+        if not self.dac: # Stateless
+            if not self.m: # Unicast
+                if self.dam == 0: off += 16
+                elif self.dam == 1: off += 8
+                elif self.dam == 2: off += 2
+            else: # Multicast
+                if self.dam == 0: off += 16
+                elif self.dam == 1: off += 6
+                elif self.dam == 2: off += 4
+                elif self.dam == 3: off += 1
+
+        self.data = buf[off:]
+
+    def decompress(self, src_mac, dst_mac):
+        from . import ip6
+        p = ip6.IP6()
+        buf = bytes(self)[2:] # Skip IPHC 2 bytes
+        off = 0
+        
+        # Traffic Class, Flow Label
+        if self.tf == 0:
+            v_tc_fl = struct.unpack('>I', buf[off:off+4])[0]
+            p.v_tc_fl = (6 << 28) | (v_tc_fl & 0x0FFFFFFF)
+            off += 4
+        elif self.tf == 1:
+            # ECN (2) DSCP (6) Rsvd (4) FL (20) -> DSCP (6) ECN (2) FL (20)
+            ecn_dscp = compat_ord(buf[off])
+            fl = struct.unpack('>H', buf[off+1:off+3])[0]
+            p.v_tc_fl = (6 << 28) | ((ecn_dscp & 0x3F) << 22) | ((ecn_dscp >> 6) << 20) | (fl & 0xFFFFF)
+            off += 3
+        elif self.tf == 2:
+            ecn_tc = compat_ord(buf[off])
+            p.v_tc_fl = (6 << 28) | ((ecn_tc & 0x3F) << 20) | ((ecn_tc >> 6) << 20)
+            off += 1
+        else:
+            p.v_tc_fl = (6 << 28)
+
+        # Next Header
+        if self.nh == 0:
+            p.nxt = compat_ord(buf[off])
+            off += 1
+        else:
+            # TODO: Handle NHC (UDP compression etc)
+            p.nxt = 0 
+
+        # Hop Limit
+        if self.hlim == 1: p.hlim = 1
+        elif self.hlim == 2: p.hlim = 64
+        elif self.hlim == 3: p.hlim = 255
+        else:
+            p.hlim = compat_ord(buf[off])
+            off += 1
+
+        # Source Address
+        if not self.sac:
+            if self.sam == 0:
+                p.src = buf[off:off+16]
+                off += 16
+            elif self.sam == 1:
+                p.src = b'\xfe\x80' + b'\x00' * 6 + buf[off:off+8]
+                off += 8
+            elif self.sam == 2:
+                p.src = b'\xfe\x80' + b'\x00' * 6 + b'\x00\x00\x00\xff\xfe\x00' + buf[off:off+2]
+                off += 2
+            elif self.sam == 3:
+                # Derive from L2
+                p.src = derive_ip6_addr(b'\xfe\x80' + b'\x00' * 6, src_mac)
+        
+        # Destination Address
+        if not self.dac:
+            if not self.m: # Unicast
+                if self.dam == 0:
+                    p.dst = buf[off:off+16]
+                    off += 16
+                elif self.dam == 1:
+                    p.dst = b'\xfe\x80' + b'\x00' * 6 + buf[off:off+8]
+                    off += 8
+                elif self.dam == 2:
+                    p.dst = b'\xfe\x80' + b'\x00' * 6 + b'\x00\x00\x00\xff\xfe\x00' + buf[off:off+2]
+                    off += 2
+                elif self.dam == 3:
+                    p.dst = derive_ip6_addr(b'\xfe\x80' + b'\x00' * 6, dst_mac)
+            else: # Multicast
+                if self.dam == 0:
+                    p.dst = buf[off:off+16]
+                    off += 16
+                elif self.dam == 1:
+                    p.dst = b'\xff' + bytes([compat_ord(buf[off])]) + b'\x00' * 9 + buf[off+1:off+6]
+                    off += 6
+                elif self.dam == 2:
+                    p.dst = b'\xff' + bytes([compat_ord(buf[off])]) + b'\x00' * 11 + buf[off+1:off+4]
+                    off += 4
+                elif self.dam == 3:
+                    p.dst = b'\xff\x02' + b'\x00' * 13 + bytes([compat_ord(buf[off])])
+                    off += 1
+
+        p.data = buf[off:]
+        p.plen = len(p.data)
+        return p
+
+def derive_ip6_addr(prefix, mac):
+    """Derive an IPv6 address from a 64-bit prefix and a MAC address."""
+    if not mac: return prefix + b'\x00' * 8
+    if len(mac) == 8:
+        # 64-bit MAC, flip bit 1 of the first byte (Universal/Local)
+        # Actually in 6LoWPAN, we just use it as is but flip the L bit?
+        # RFC 4944: IID is formed by complement of the 'Universal/Local' bit.
+        iid = bytearray(mac)
+        iid[0] ^= 0x02
+        return prefix + bytes(iid)
+    elif len(mac) == 2:
+        # 16-bit short address
+        return prefix + b'\x00\x00\x00\xff\xfe\x00' + mac
+    return prefix + b'\x00' * 8
 
 class SixLoWPAN_Frag(dpkt.Packet):
     """6LoWPAN Fragment Header."""

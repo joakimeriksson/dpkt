@@ -68,6 +68,7 @@ from . import sip
 from . import sixlowpan
 from . import sll
 from . import sll2
+from . import slip
 from . import smb
 from . import ssl
 from . import stp

@@ -3,7 +3,9 @@
 """Internet Control Message Protocol for IPv6."""
 from __future__ import absolute_import
 
+import struct
 from . import dpkt
+from .compat import compat_ord
 
 ICMP6_DST_UNREACH = 1  # dest unreachable, codes:
 ICMP6_PACKET_TOO_BIG = 2  # packet too big
@@ -43,6 +45,18 @@ RPL_DIO = 0x01
 RPL_DAO = 0x02
 RPL_DAO_ACK = 0x03
 RPL_CC = 0x80
+
+# RPL Option Types
+RPL_OPT_PAD1 = 0
+RPL_OPT_PADN = 1
+RPL_OPT_METRIC_CONTAINER = 2
+RPL_OPT_ROUTING_INFO = 3
+RPL_OPT_DODAG_CONF = 4
+RPL_OPT_TARGET = 5
+RPL_OPT_TRANSIT_INFO = 6
+RPL_OPT_SOLICIT_INFO = 7
+RPL_OPT_PREFIX_INFO = 8
+RPL_OPT_TARGET_DESC = 9
 
 ICMP6_MAXTYPE = 201
 
@@ -96,6 +110,18 @@ class ICMP6(dpkt.Packet):
             ('rsvd', 'B', 0)
         )
 
+        def __init__(self, *args, **kwargs):
+            self.opts = []
+            super(ICMP6.RPLDIS, self).__init__(*args, **kwargs)
+
+        def unpack(self, buf):
+            dpkt.Packet.unpack(self, buf)
+            self.opts = decode_rpl_opts(self.data)
+            self.data = b''
+
+        def __bytes__(self):
+            return self.pack_hdr() + encode_rpl_opts(self.opts)
+
     class RPLDIO(dpkt.Packet):
         __hdr__ = (
             ('instance_id', 'B', 0),
@@ -116,6 +142,18 @@ class ICMP6(dpkt.Packet):
             )
         }
 
+        def __init__(self, *args, **kwargs):
+            self.opts = []
+            super(ICMP6.RPLDIO, self).__init__(*args, **kwargs)
+
+        def unpack(self, buf):
+            dpkt.Packet.unpack(self, buf)
+            self.opts = decode_rpl_opts(self.data)
+            self.data = b''
+
+        def __bytes__(self):
+            return self.pack_hdr() + encode_rpl_opts(self.opts)
+
     class RPLDAO(dpkt.Packet):
         __hdr__ = (
             ('instance_id', 'B', 0),
@@ -131,6 +169,10 @@ class ICMP6(dpkt.Packet):
             )
         }
 
+        def __init__(self, *args, **kwargs):
+            self.opts = []
+            super(ICMP6.RPLDAO, self).__init__(*args, **kwargs)
+
         def unpack(self, buf):
             dpkt.Packet.unpack(self, buf)
             if self.d:
@@ -138,12 +180,14 @@ class ICMP6(dpkt.Packet):
                 self.data = self.data[16:]
             else:
                 self.dodagid = None
+            self.opts = decode_rpl_opts(self.data)
+            self.data = b''
 
         def __bytes__(self):
             res = self.pack_hdr()
             if self.d and self.dodagid:
                 res += self.dodagid
-            res += bytes(self.data)
+            res += encode_rpl_opts(self.opts)
             return res
 
     class RPLDAOACK(dpkt.Packet):
@@ -160,6 +204,10 @@ class ICMP6(dpkt.Packet):
             )
         }
 
+        def __init__(self, *args, **kwargs):
+            self.opts = []
+            super(ICMP6.RPLDAOACK, self).__init__(*args, **kwargs)
+
         def unpack(self, buf):
             dpkt.Packet.unpack(self, buf)
             if self.d:
@@ -167,18 +215,136 @@ class ICMP6(dpkt.Packet):
                 self.data = self.data[16:]
             else:
                 self.dodagid = None
+            self.opts = decode_rpl_opts(self.data)
+            self.data = b''
 
         def __bytes__(self):
             res = self.pack_hdr()
             if self.d and self.dodagid:
                 res += self.dodagid
-            res += bytes(self.data)
+            res += encode_rpl_opts(self.opts)
             return res
+
+    class RPLOption(dpkt.Packet):
+        __hdr__ = (
+            ('type', 'B', 0),
+            ('len', 'B', 0)
+        )
+
+        def unpack(self, buf):
+            if not buf: raise dpkt.NeedData()
+            self.type = compat_ord(buf[0])
+            if self.type == RPL_OPT_PAD1:
+                self.len = 0
+                self.data = b''
+                return
+            
+            # For subclasses with their own __hdr__, use Packet.unpack
+            if self.__class__ != ICMP6.RPLOption:
+                dpkt.Packet.unpack(self, buf)
+                return
+
+            if len(buf) < 2: raise dpkt.NeedData()
+            self.len = compat_ord(buf[1])
+            if len(buf) < 2 + self.len: raise dpkt.NeedData()
+            self.data = buf[2:2+self.len]
+
+        def __bytes__(self):
+            if self.type == RPL_OPT_PAD1:
+                return b'\x00'
+            if self.__class__ != ICMP6.RPLOption:
+                return self.pack_hdr() + bytes(self.data)
+            return struct.pack('BB', self.type, len(self.data)) + bytes(self.data)
+
+    class RPLOptDODAGConf(RPLOption):
+        __hdr__ = (
+            ('type', 'B', RPL_OPT_DODAG_CONF),
+            ('len', 'B', 14),
+            ('flags', 'B', 0),
+            ('dio_int_min', 'B', 0),
+            ('dio_int_doub', 'B', 0),
+            ('dio_redun', 'B', 0),
+            ('max_rank_inc', 'H', 0),
+            ('min_hop_rank_inc', 'H', 0),
+            ('ocp', 'H', 0),
+            ('rsvd', 'B', 0),
+            ('def_lifetime', 'B', 0),
+            ('lifetime_unit', 'H', 0)
+        )
+
+    class RPLOptPrefixInfo(RPLOption):
+        __hdr__ = (
+            ('type', 'B', RPL_OPT_PREFIX_INFO),
+            ('len', 'B', 30),
+            ('prefix_len', 'B', 0),
+            ('_l_a_r_flags', 'B', 0),
+            ('valid_lifetime', 'I', 0),
+            ('pref_lifetime', 'I', 0),
+            ('rsvd', 'I', 0),
+            ('prefix', '16s', b'\x00' * 16)
+        )
+        __bit_fields__ = {
+            '_l_a_r_flags': (
+                ('l', 1),
+                ('a', 1),
+                ('r', 1),
+                ('flags', 5)
+            )
+        }
+
+    class RPLOptTarget(RPLOption):
+        __hdr__ = (
+            ('type', 'B', RPL_OPT_TARGET),
+            ('len', 'B', 0),
+            ('flags', 'B', 0),
+            ('prefix_len', 'B', 0)
+        )
+        # Prefix follows
+
+        def unpack(self, buf):
+            dpkt.Packet.unpack(self, buf)
+            self.prefix = self.data
+            self.data = b''
+
+        def __bytes__(self):
+            return self.pack_hdr() + self.prefix
+
+    class RPLOptTransitInfo(RPLOption):
+        __hdr__ = (
+            ('type', 'B', RPL_OPT_TRANSIT_INFO),
+            ('len', 'B', 0),
+            ('flags', 'B', 0),
+            ('path_ctl', 'B', 0),
+            ('path_seq', 'B', 0),
+            ('path_lifetime', 'B', 0)
+        )
+        # Parent address follows (optional)
+
+        def unpack(self, buf):
+            dpkt.Packet.unpack(self, buf)
+            self.parent = self.data
+            self.data = b''
+
+        def __bytes__(self):
+            return self.pack_hdr() + self.parent
+
+    class RPLOptPadN(RPLOption):
+        __hdr__ = (
+            ('type', 'B', RPL_OPT_PADN),
+            ('len', 'B', 0)
+        )
 
     _typesw = {1: Unreach, 2: TooBig, 3: TimeExceed, 4: ParamProb, 128: Echo, 129: Echo}
     _rplsw = {
         RPL_DIS: RPLDIS, RPL_DIO: RPLDIO,
         RPL_DAO: RPLDAO, RPL_DAO_ACK: RPLDAOACK
+    }
+    _rploptsw = {
+        RPL_OPT_PADN: RPLOptPadN,
+        RPL_OPT_DODAG_CONF: RPLOptDODAGConf,
+        RPL_OPT_PREFIX_INFO: RPLOptPrefixInfo,
+        RPL_OPT_TARGET: RPLOptTarget,
+        RPL_OPT_TRANSIT_INFO: RPLOptTransitInfo
     }
 
     def unpack(self, buf):
@@ -191,6 +357,32 @@ class ICMP6(dpkt.Packet):
             setattr(self, self.data.__class__.__name__.lower(), self.data)
         except (KeyError, dpkt.UnpackError):
             pass
+
+
+def decode_rpl_opts(buf):
+    """Return a list of RPL options decoded from buf."""
+    opts = []
+    while buf:
+        t = compat_ord(buf[0])
+        if t == RPL_OPT_PAD1:
+            opts.append(ICMP6.RPLOption(buf[:1]))
+            buf = buf[1:]
+            continue
+        if len(buf) < 2:
+            break
+        l = compat_ord(buf[1])
+        if len(buf) < 2 + l:
+            break
+        opt_buf = buf[:2+l]
+        cls = ICMP6._rploptsw.get(t, ICMP6.RPLOption)
+        opts.append(cls(opt_buf))
+        buf = buf[2+l:]
+    return opts
+
+
+def encode_rpl_opts(opts):
+    """Return a bytes string of encoded RPL options."""
+    return b''.join([bytes(opt) for opt in opts])
 
 
 def test_icmp6_rpl():
@@ -220,6 +412,20 @@ def test_icmp6_rpl():
     assert icmp2.code == RPL_DIS
     assert icmp2.rpldis.flags == 0
     assert bytes(icmp2) == buf2
+
+    # RPL DIO with Options
+    # DIO + DODAG Conf (Type 4, Len 14, ...)
+    buf3 = unhexlify(
+        '9b01abcd' +  # ICMPv6
+        '0102010008030000fd000000000000000000000000000001' +  # DIO
+        '040e000c080a07000100010000010001'  # DODAG Conf
+    )
+    icmp3 = ICMP6(buf3)
+    assert icmp3.code == RPL_DIO
+    assert len(icmp3.rpldio.opts) == 1
+    assert isinstance(icmp3.rpldio.opts[0], ICMP6.RPLOptDODAGConf)
+    assert icmp3.rpldio.opts[0].dio_int_min == 12
+    assert bytes(icmp3) == buf3
 
 
 if __name__ == '__main__':
