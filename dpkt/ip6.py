@@ -244,6 +244,13 @@ class IP6RoutingHeader(IP6ExtensionHeader):
         self.addresses = addresses
         self.length = self.len * 8 + 8
 
+    def __bytes__(self):
+        res = self.pack_hdr()
+        if hasattr(self, 'addresses'):
+            for addr in self.addresses:
+                res += addr
+        return res + bytes(self.data)
+
 
 class IP6FragmentHeader(IP6ExtensionHeader):
     __hdr__ = (

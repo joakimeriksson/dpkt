@@ -1,0 +1,23 @@
+[project]
+name = "dpkt"
+version = "1.9.8"
+description = "Fast, simple packet creation / parsing, with definitions for the basic TCP/IP protocols"
+authors = ["Dug Song <dugsong@monkey.org>"]
+channels = ["conda-forge"]
+platforms = ["linux-64", "osx-64", "osx-arm64", "win-64"]
+
+[dependencies]
+python = ">=3.8"
+pytest = "*"
+coverage = "*"
+pytest-cov = "*"
+pyserial = "*"
+
+[tasks]
+test = "pytest dpkt"
+test-cov = "pytest --cov=dpkt dpkt"
+rpl-example = "python examples/rpl_border_router.py"
+rpl-shell = "python examples/rpl_shell.py"
+rpl-br = "python examples/rpl_br.py socket://localhost:60001"
+lwm2m-server = "python examples/lwm2m_server.py"
+lwm2m-device = "python examples/lwm2m_device.py"

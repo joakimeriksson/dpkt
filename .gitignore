@@ -39,4 +39,4 @@ _build
 .settings/
 .classpath 
 .project
-.pydevproject
+.pydevprojectrun_cooja.sh
