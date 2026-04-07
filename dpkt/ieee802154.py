@@ -83,9 +83,12 @@ class IEEE802154(dpkt.Packet):
             
             addr_len = 2 if self.dst_mode == ADDR_MODE_SHORT else 8
             if off + addr_len > len(buf): raise dpkt.NeedData()
-            self.dst_addr = buf[off:off+addr_len]
+            raw = buf[off:off+addr_len]
+            # 802.15.4 extended addresses are little-endian in the frame;
+            # reverse to big-endian (EUI-64) like Contiki-NG does
+            self.dst_addr = raw[::-1] if addr_len == 8 else raw
             off += addr_len
-            
+
         # Source PAN ID / Addr
         if self.src_mode != ADDR_MODE_NONE:
             # If both addresses present and Compression=1, Source PAN is omitted.
@@ -95,10 +98,11 @@ class IEEE802154(dpkt.Packet):
                 off += 2
             else:
                 self.src_pan = self.dst_pan
-                
+
             addr_len = 2 if self.src_mode == ADDR_MODE_SHORT else 8
             if off + addr_len > len(buf): raise dpkt.NeedData()
-            self.src_addr = buf[off:off+addr_len]
+            raw = buf[off:off+addr_len]
+            self.src_addr = raw[::-1] if addr_len == 8 else raw
             off += addr_len
             
         self.data = buf[off:]
@@ -108,12 +112,15 @@ class IEEE802154(dpkt.Packet):
         
         if self.dst_mode != ADDR_MODE_NONE:
             res += struct.pack('<H', self.dst_pan)
-            res += self.dst_addr
-            
+            # Reverse extended addresses back to little-endian for the frame
+            addr = self.dst_addr
+            res += addr[::-1] if len(addr) == 8 else addr
+
         if self.src_mode != ADDR_MODE_NONE:
             if not (self.src_mode != ADDR_MODE_NONE and self.dst_mode != ADDR_MODE_NONE and self.pan_id_comp):
                 res += struct.pack('<H', self.src_pan)
-            res += self.src_addr
+            addr = self.src_addr
+            res += addr[::-1] if len(addr) == 8 else addr
             
         return res + bytes(self.data)
 
