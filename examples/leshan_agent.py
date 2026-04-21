@@ -29,10 +29,20 @@ def encode_float(val):
     """Encode float to LWM2M binary format (4 or 8 bytes IEEE 754)."""
     return struct.pack('>f', val) # 4-byte float
 
+def default_bind_host(server_host, server_port):
+    probe = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        probe.connect((server_host, server_port))
+        return probe.getsockname()[0]
+    except OSError:
+        return '127.0.0.1'
+    finally:
+        probe.close()
+
 def run_leshan_agent():
-    BIND_HOST = os.environ.get('LWM2M_BIND_HOST', '127.0.0.1')
     SERVER_HOST = os.environ.get('LESHAN_HOST', 'leshan.eclipseprojects.io')
     SERVER_PORT = 5683
+    BIND_HOST = os.environ.get('LWM2M_BIND_HOST', default_bind_host(SERVER_HOST, SERVER_PORT))
     ENDPOINT = 'dpkt-agent-2026'
     
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
