@@ -3,18 +3,20 @@
 LWM2M Device Example
 Simulates an LWM2M Client that registers and responds to Read requests.
 """
+import os
 import socket
 import dpkt
 
 def run_device():
     # Configuration
-    SERVER_IP = '127.0.0.1'
+    BIND_HOST = os.environ.get('LWM2M_BIND_HOST', '127.0.0.1')
+    SERVER_HOST = '127.0.0.1'
     SERVER_PORT = 5683
     DEVICE_PORT = 5684
     ENDPOINT = 'dpkt-device'
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.bind(('0.0.0.0', DEVICE_PORT))
+    sock.bind((BIND_HOST, DEVICE_PORT))
     sock.settimeout(5.0)
 
     print(f"[*] LWM2M Device '{ENDPOINT}' started on port {DEVICE_PORT}")
@@ -37,8 +39,8 @@ def run_device():
     reg.opts.append((dpkt.coap.COAP_OPT_CONTENT_FORMAT, struct.pack('B', dpkt.coap.COAP_FORMAT_LINK)))
 
     
-    print(f"[*] Sending Registration to {SERVER_IP}:{SERVER_PORT}...")
-    sock.sendto(bytes(reg), (SERVER_IP, SERVER_PORT))
+    print(f"[*] Sending Registration to {SERVER_HOST}:{SERVER_PORT}...")
+    sock.sendto(bytes(reg), (SERVER_HOST, SERVER_PORT))
 
     try:
         # 2. Wait for Read Request from Server

@@ -3,15 +3,17 @@
 LWM2M Server Example
 Listens for Registration and sends a Read request.
 """
+import os
 import socket
 import dpkt
 
 def run_server():
     # Configuration
+    BIND_HOST = os.environ.get('LWM2M_BIND_HOST', '127.0.0.1')
     SERVER_PORT = 5683
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.bind(('0.0.0.0', SERVER_PORT))
+    sock.bind((BIND_HOST, SERVER_PORT))
     sock.settimeout(10.0)
 
     print(f"[*] LWM2M Server started on port {SERVER_PORT}")

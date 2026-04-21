@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+import os
 import socket
 import dpkt
 import struct
@@ -29,12 +30,13 @@ def encode_float(val):
     return struct.pack('>f', val) # 4-byte float
 
 def run_leshan_agent():
-    SERVER_IP = '23.97.187.154'
+    BIND_HOST = os.environ.get('LWM2M_BIND_HOST', '127.0.0.1')
+    SERVER_HOST = os.environ.get('LESHAN_HOST', 'leshan.eclipseprojects.io')
     SERVER_PORT = 5683
     ENDPOINT = 'dpkt-agent-2026'
     
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    sock.bind(('0.0.0.0', 5685))
+    sock.bind((BIND_HOST, 5685))
     sock.setblocking(0)
 
     def send_reg(is_update=False):
@@ -52,7 +54,7 @@ def run_leshan_agent():
         reg.opts.append((dpkt.coap.COAP_OPT_URI_QUERY, b"lt=86400"))
         reg.opts.append((dpkt.coap.COAP_OPT_URI_QUERY, b"b=U"))
         reg.opts.append((dpkt.coap.COAP_OPT_CONTENT_FORMAT, struct.pack('B', dpkt.coap.COAP_FORMAT_LINK)))
-        sock.sendto(bytes(reg), (SERVER_IP, SERVER_PORT))
+        sock.sendto(bytes(reg), (SERVER_HOST, SERVER_PORT))
         print(f"[*] Sent {'Update' if is_update else 'Registration'} for {ENDPOINT}")
 
     send_reg()
