@@ -129,7 +129,11 @@ def run_leshan_agent():
                                          and not target.is_multi
                                          and isinstance(target.value, (str, int))
                                          and not isinstance(target.value, bool))
-                        if (accept in (0, None)) and single_simple:
+                        if accept == dpkt.coap.COAP_FORMAT_LWM2M_JSON:
+                            base_path = f'/{obj_id}/{paths[1] if len(paths) > 1 else 0}/'
+                            resp_data = LWM2M.encode(target, LWM2M.ContentFormat.JSON, base_path=base_path)
+                            content_format = dpkt.coap.COAP_FORMAT_LWM2M_JSON
+                        elif (accept in (0, None)) and single_simple:
                             resp_data = str(target.value).encode('utf-8')
                             content_format = dpkt.coap.COAP_FORMAT_TEXT
                         else:

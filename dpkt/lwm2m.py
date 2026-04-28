@@ -3,6 +3,8 @@
 from __future__ import print_function
 from __future__ import absolute_import
 
+import base64 as _base64
+import json as _json
 import struct
 from . import dpkt
 from .compat import compat_ord
@@ -51,7 +53,7 @@ class LWM2M(object):
 
     * an abstract data model — :class:`LWM2M.Resource`,
       :class:`LWM2M.ObjectInstance`
-    * supported wire formats — :class:`LWM2M.TLV` (more to come)
+    * supported wire formats — :class:`LWM2M.TLV`, :class:`LWM2M.JSON`
     * format dispatch — :meth:`LWM2M.encode`, :meth:`LWM2M.decode`
 
     The data model lets callers construct an LwM2M payload once and
@@ -209,18 +211,63 @@ class LWM2M(object):
         def __len__(self):
             return len(bytes(self))
 
+    class JSON(dpkt.Packet):
+        """LWM2M JSON Format. OMA LwM2M v1.0, Section 6.3.4.
+
+        Wire form is a single JSON object::
+
+            {"bn": "/3/0/", "e": [{"n": "0", "sv": "Open Mobile Alliance"},
+                                  {"n": "9", "v": 100}]}
+
+        Attributes:
+            bn (str): Base Name — URI prefix prepended to each entry's ``n``.
+            bt (int|None): Base Time (Unix seconds), or ``None`` if absent.
+            entries (list[dict]): Entry dicts, each with ``n`` plus exactly
+                one of ``sv`` (string), ``v`` (number), ``bv`` (bool),
+                ``ov`` (object link); plus optional ``t`` (time).
+        """
+
+        def __init__(self, *args, **kwargs):
+            self.bn = ''
+            self.bt = None
+            self.entries = []
+            super(LWM2M.JSON, self).__init__(*args, **kwargs)
+
+        def unpack(self, buf):
+            if isinstance(buf, bytes):
+                buf = buf.decode('utf-8')
+            obj = _json.loads(buf)
+            self.bn = obj.get('bn', '')
+            self.bt = obj.get('bt')
+            self.entries = obj.get('e', [])
+            self.data = b''
+
+        def __bytes__(self):
+            out = {}
+            if self.bn:
+                out['bn'] = self.bn
+            if self.bt is not None:
+                out['bt'] = self.bt
+            out['e'] = self.entries
+            return _json.dumps(out, separators=(',', ':')).encode('utf-8')
+
+        def __len__(self):
+            return len(bytes(self))
+
     # ---------------------------------------------------------- dispatch
 
     @staticmethod
     def encode(obj, content_format, base_path=''):
         """Encode a Resource / ObjectInstance / list to wire bytes.
 
-        ``base_path`` is reserved for self-describing formats and is
-        ignored by the TLV codec. Only :data:`LWM2M.ContentFormat.TLV`
-        is implemented today.
+        ``base_path`` is only used by JSON and becomes the ``bn`` field.
+        Conventionally something like ``"/3/0/"`` for a Device Object
+        Instance read.
         """
         if content_format == LWM2M.ContentFormat.TLV:
             return _encode_tlv(obj)
+        if content_format == LWM2M.ContentFormat.JSON:
+            return _encode_json(obj, base_path)
         raise NotImplementedError(
             'LWM2M content format %r is not implemented' % content_format)
 
@@ -232,10 +279,13 @@ class LWM2M(object):
         :class:`LWM2M.Resource` when the payload describes one;
         otherwise a list. For TLV, decoded ``Resource.value`` fields
         are raw ``bytes`` (TLV is not self-describing — apply your
-        Object schema to interpret them).
+        Object schema to interpret them). JSON decodes preserve native
+        Python types from the wire.
         """
         if content_format == LWM2M.ContentFormat.TLV:
             return _decode_tlv(buf)
+        if content_format == LWM2M.ContentFormat.JSON:
+            return _decode_json(buf, base_path)
         raise NotImplementedError(
             'LWM2M content format %r is not implemented' % content_format)
 
@@ -322,6 +372,88 @@ def _decode_tlv(buf):
     return items
 
 
+# =========================================================== JSON codec
+
+def _entry_for_value(name, value):
+    e = {'n': name}
+    if isinstance(value, bool):  # before int
+        e['bv'] = value
+    elif isinstance(value, (int, float)):
+        e['v'] = value
+    elif isinstance(value, str):
+        e['sv'] = value
+    elif isinstance(value, bytes):
+        e['sv'] = _base64.b64encode(value).decode('ascii')
+    else:
+        raise TypeError('cannot encode JSON value of type %s' % type(value).__name__)
+    return e
+
+
+def _value_from_entry(entry):
+    for key in ('sv', 'v', 'bv', 'ov'):
+        if key in entry:
+            return entry[key]
+    return None
+
+
+def _json_entries_for(obj, prefix=''):
+    """Yield JSON entry dicts describing ``obj``. Names are relative
+    to whatever ``base_path`` (``bn``) the caller will set."""
+    if isinstance(obj, LWM2M.Resource):
+        if obj.is_multi:
+            for inst_id in sorted(obj.instances):
+                yield _entry_for_value('%s%d/%d' % (prefix, obj.id, inst_id),
+                                       obj.instances[inst_id])
+        else:
+            yield _entry_for_value('%s%d' % (prefix, obj.id), obj.value)
+    elif isinstance(obj, LWM2M.ObjectInstance):
+        for r in obj.resources:
+            for e in _json_entries_for(r, prefix):
+                yield e
+    elif isinstance(obj, (list, tuple)):
+        for item in obj:
+            for e in _json_entries_for(item, prefix):
+                yield e
+    else:
+        raise TypeError('cannot encode %s as JSON' % type(obj).__name__)
+
+
+def _encode_json(obj, base_path):
+    j = LWM2M.JSON(bn=base_path, entries=list(_json_entries_for(obj)))
+    return bytes(j)
+
+
+def _decode_json(buf, base_path):
+    j = LWM2M.JSON(buf)
+    by_res = {}
+    for e in j.entries:
+        parts = e['n'].split('/')
+        if len(parts) == 1:
+            res_id = int(parts[0])
+            by_res[res_id] = LWM2M.Resource(id=res_id, value=_value_from_entry(e))
+        elif len(parts) == 2:
+            res_id, inst_id = int(parts[0]), int(parts[1])
+            r = by_res.get(res_id)
+            if r is None or not r.is_multi:
+                r = LWM2M.Resource(id=res_id, instances={})
+                by_res[res_id] = r
+            r.instances[inst_id] = _value_from_entry(e)
+        else:
+            raise ValueError('unexpected JSON entry name %r' % e['n'])
+
+    resources = [by_res[rid] for rid in sorted(by_res)]
+
+    # If bn (or fallback base_path) names an object instance "/<obj>/<inst>/",
+    # wrap as an ObjectInstance; otherwise hand back the bare Resource list.
+    bp = j.bn or base_path
+    bp_parts = [p for p in bp.split('/') if p]
+    if len(bp_parts) >= 2:
+        return LWM2M.ObjectInstance(id=int(bp_parts[1]), resources=resources)
+    if len(resources) == 1:
+        return resources[0]
+    return resources
+
+
 # ================================================================ tests
 
 def test_lwm2m():
@@ -363,6 +495,29 @@ def test_lwm2m():
     assert multi.is_multi
     assert set(multi.instances.keys()) == {0, 1}
 
+    # ---- JSON codec --------------------------------------------------
+    json_bytes = LWM2M.encode(inst, CF.JSON, base_path='/3/0/')
+    j = LWM2M.JSON(json_bytes)
+    assert j.bn == '/3/0/'
+    # Three resources, but the multi-instance one expands to 2 entries → 4.
+    assert len(j.entries) == 4
+    assert {e['n'] for e in j.entries} == {'0', '9', '6/0', '6/1'}
+
+    # JSON round-trip: decode → re-encode preserves values (native types).
+    decoded_j = LWM2M.decode(json_bytes, CF.JSON)
+    assert isinstance(decoded_j, LWM2M.ObjectInstance)
+    assert decoded_j.id == 0
+    by_id = {r.id: r for r in decoded_j.resources}
+    assert by_id[LWM2M_DEV_MANUFACTURER].value == 'Open Mobile Alliance'
+    assert by_id[LWM2M_DEV_BATTERY_LEVEL].value == 100
+    assert by_id[LWM2M_DEV_AVAILABLE_POWER_SOURCES].instances == {0: 1, 1: 5}
+
+    # JSON wire matches the OMA-style human-readable form.
+    parsed = _json.loads(json_bytes.decode())
+    assert parsed['bn'] == '/3/0/'
+    assert {'n': '0', 'sv': 'Open Mobile Alliance'} in parsed['e']
+    assert {'n': '9', 'v': 100} in parsed['e']
+
     # ---- Direct Resource + bare-list paths ---------------------------
     single = LWM2M.Resource(id=5850, value=True)
     rt = LWM2M.decode(LWM2M.encode(single, CF.TLV), CF.TLV)
@@ -370,7 +525,7 @@ def test_lwm2m():
 
     # ---- Unimplemented format ----------------------------------------
     try:
-        LWM2M.decode(b'', CF.JSON)
+        LWM2M.decode(b'', CF.SENML_CBOR)
     except NotImplementedError:
         pass
     else:
