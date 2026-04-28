@@ -51,20 +51,18 @@ def run_device():
         # Note: In a real client we'd parse opts properly
         print(f"[*] Received request from {addr}: Code={req.code}")
         
-        # 3. Respond with LWM2M TLV data
-        # Device Manufacturer (Resource ID 0)
-        tlv = dpkt.lwm2m.LWM2M_TLV(
-            type=dpkt.lwm2m.LWM2M_TLV_RESOURCE,
-            id=dpkt.lwm2m.LWM2M_DEV_MANUFACTURER,
-            value=b'dpkt-project'
-        )
-        
+        # 3. Respond with LWM2M TLV data via the format-agnostic data model.
+        from dpkt.lwm2m import LWM2M
+        manufacturer = LWM2M.Resource(id=dpkt.lwm2m.LWM2M_DEV_MANUFACTURER,
+                                      value='dpkt-project')
+        payload = LWM2M.encode(manufacturer, LWM2M.ContentFormat.TLV)
+
         resp = dpkt.coap.CoAP(
             t=dpkt.coap.COAP_ACK,
             code=dpkt.coap.COAP_CONTENT,
             id=req.id,
             token=req.token,
-            data=bytes(tlv)
+            data=payload
         )
         resp.opts.append((dpkt.coap.COAP_OPT_CONTENT_FORMAT, struct.pack('>H', dpkt.coap.COAP_FORMAT_LWM2M_TLV)))
         

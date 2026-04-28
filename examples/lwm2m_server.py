@@ -56,13 +56,19 @@ def run_server():
         
         print(f"[*] Received Read Response: Code={resp.code}")
         
-        # 4. Parse LWM2M TLV data
-        tlvs = dpkt.lwm2m.parse_tlvs(resp.data)
-        for tlv in tlvs:
-            if tlv.id == dpkt.lwm2m.LWM2M_DEV_MANUFACTURER:
-                print(f"    [+] Resource ID {tlv.id} (Manufacturer): {tlv.value.decode()}")
+        # 4. Parse LWM2M TLV data via the format-agnostic decoder.
+        from dpkt.lwm2m import LWM2M
+        decoded = LWM2M.decode(resp.data, LWM2M.ContentFormat.TLV)
+        # decode() returns a single Resource for a one-resource payload,
+        # or an ObjectInstance / list for richer responses.
+        resources = (decoded.resources if isinstance(decoded, LWM2M.ObjectInstance)
+                     else [decoded] if isinstance(decoded, LWM2M.Resource)
+                     else decoded)
+        for r in resources:
+            if r.id == dpkt.lwm2m.LWM2M_DEV_MANUFACTURER:
+                print(f"    [+] Resource ID {r.id} (Manufacturer): {r.value.decode()}")
             else:
-                print(f"    [+] Resource ID {tlv.id}: {tlv.value}")
+                print(f"    [+] Resource ID {r.id}: {r.value}")
 
     except socket.timeout:
         print("[!] Timeout: No messages received.")
